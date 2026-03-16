@@ -1,30 +1,23 @@
-# ULTRA SPACE ARCADE
-**The Ultimate 2D Space Shooter Experience**
+# ULTRA SPACE ARCADE v0.9
+**Evolutionary 2D Space Shooter**
 
-## 🚀 Game Overview
-Ultra Space Arcade is a high-fidelity, evolutionary space shooter. Battle through 10.0 Au of hostile space, upgrade your arsenal in real-time, and face off against the Twin Cursed Planets.
+## 🚀 Version 0.9 New Features
+- **Automatic Stage Progression**: Level 1 Boss death now triggers an automated, cinematic transition to Stage 2 with a countdown and sector warning.
+- **Nebula Sector (Stage 2)**: All-new environment featuring Red/Yellow starfields and Light Blue/Green/Pink planetary bodies.
+- **Ghost Shield System**: A new high-tier award activated with **C**. Deploys a 120-degree cyan energy arc that absorbs 3 hits or 20 seconds of fire.
+- **Elite Star-Spike Warships**: Rare Stage 2 enemies that wander and fire downward before launching a high-speed locked-trajectory kamikaze charge.
+- **Combat Refinements**: 
+    - **Hit-Flashing**: All enemies strobe white when struck for better feedback.
+    - **True Laser Piercing**: Beams now drill through multiple enemies in their path.
+    - **Total Purge**: Victory now immediately clears the field of all hostile comets and projectiles.
 
 ## 🕹️ Controls
-- **Move**: WASD or Arrow Keys
-- **Fire**: Spacebar or Enter
-- **Nuke**: Left/Right Ctrl (Wipes screen, deals heavy damage)
-- **ZAPP**: 'Z' Key (Persistent screen-clearing beam - Requires recharge)
-- **Weapon Cycle**: F8 (Debug/Cheat mode)
-- **Super Laser**: F7 (Toggle instant evolution)
-- **Boss Warp**: L-Shift + D (Skip to 9.0 Au)
-
-## 🔥 Weapon Evolution System
-Your weaponry improves as you collect power-ups:
-1. **Tier 1**: Standard tactical fire.
-2. **Tier 2**: Collecting a duplicate weapon doubles your fire rate.
-   - *Laser* evolves into the **Super Laser**: Alternating dual-beams with 40ms fire rate.
-3. **Max Tier (Mortars)**: Collecting a power-up at Tier 2 launches **Diagonal Mortars** that detonate at 80% screen height with a massive destructive radius.
-
-## 👾 Boss Encounter: The Twin Cursed Planets
-Spawning at 9.9 Au, these twins must be defeated together.
-- **Rage Mode**: Killing one twin sends the other into a Maroon Rage.
-- **Rage Pulse**: The survivor fires massive white shockwaves every 4 seconds.
-- **Hit Leaking**: Deal damage to drop Nukes and Weapon power-ups.
+- **Move**: WASD / Arrows
+- **Fire**: Space / Enter
+- **Nuke**: Ctrl (Wipe screen)
+- **Shield**: 'C' Key (Requires pickup)
+- **ZAPP**: 'Z' Key (Requires recharge)
+- **Advance Level (Test)**: CTRL + N (Triple Flash jump)
 
 ---
-*Created with Python/Pygame. v0.6 Clean Distribution.*
+*Sanitized Distribution Build.*

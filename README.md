@@ -1,4 +1,4 @@
-# 🚀 ULTRA SPACE ARCADE (v0.10)
+# 🚀 ULTRA SPACE ARCADE (v0.12)
 **A High-Fidelity Evolutionary 2D Arcade Shooter**
 
 Ultra Space Arcade is a tactical, fast-paced space shooter built with Python and Pygame. It features a deep weapon evolution system, complex multi-phase boss battles, and a unique "Nebula Frontier" stage progression system.
@@ -9,11 +9,9 @@ Ultra Space Arcade is a tactical, fast-paced space shooter built with Python and
 ## 🕹️ Controls & Navigation
 - **Movement**: `WASD` or `Arrow Keys`
 - **Primary Fire**: `Spacebar` or `Enter`
-- **Nuke (Wipe Screen)**: `Left/Right Ctrl` (Requires pickup)
+- **Nuke (Wipe Screen)**: `X` (Requires pickup)
 - **Ghost Shield**: `C` Key (Requires pickup - 3 hits / 20s)
 - **ZAPP Beam**: `Z` Key (Manual screen-clearing - 16s recharge)
-- **Advance Level (Debug)**: `CTRL + N` (Triple-flash jump)
-- **Boss Warp (Debug)**: `L-Shift + D` (Skips to 9.0 Au)
 
 ---
 
@@ -80,4 +78,4 @@ A persistent award that clears the horizontal plane of the ship.
 - **License**: Restricted Use (Personal/Experimental only).
 
 ---
-*Created by [limbo666]. v0.9 Master Distribution.*
+*Created by [limbo666]. v0.12 Master Distribution.*

@@ -1,4 +1,4 @@
-# 🚀 ULTRA SPACE ARCADE (v0.9)
+# 🚀 ULTRA SPACE ARCADE (v0.10)
 **A High-Fidelity Evolutionary 2D Arcade Shooter**
 
 Ultra Space Arcade is a tactical, fast-paced space shooter built with Python and Pygame. It features a deep weapon evolution system, complex multi-phase boss battles, and a unique "Nebula Frontier" stage progression system.

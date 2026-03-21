@@ -1,4 +1,4 @@
-# 🚀 ULTRA SPACE ARCADE (v0.12)
+# 🚀 ULTRA SPACE ARCADE (v0.13)
 **A High-Fidelity Evolutionary 2D Arcade Shooter**
 
 Ultra Space Arcade is a tactical, fast-paced space shooter built with Python and Pygame. It features a deep weapon evolution system, complex multi-phase boss battles, and a unique "Nebula Frontier" stage progression system.
@@ -59,6 +59,8 @@ A persistent award that clears the horizontal plane of the ship.
   - **Design**: Replicated from heavy "EnemyDrone" specs.
   - **Behavior**: Hovers and wanders for 5s firing downward, then launches a locked-trajectory kamikaze charge.
 
+### Stage 3: The Astro Edge
+
 ---
 
 ## 🔧 Engine Features
@@ -77,5 +79,9 @@ A persistent award that clears the horizontal plane of the ship.
   - `13_Misa.TTF` (Awards)
 - **License**: Restricted Use (Personal/Experimental only).
 
+##  Sound
+- **Sound Effects**: Taken from [sfxr](https://sfxr.me/). What a great service! 
+- **Music**: Taken form [suno](https://suno.com/) ATTENTION: Music is provided stricty for personal an experimental use. No modification, no distribution, no reuse, or public usage allowed!
+
 ---
-*Created by [limbo666]. v0.12 Master Distribution.*
+*Created by [limbo666]. v0.13 Master Distribution.*

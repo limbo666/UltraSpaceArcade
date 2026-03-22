@@ -2,9 +2,9 @@
 **This is a vibe coding project.** 
 
 
-Created as experiment to understand the posibilities of AI and test tools like Gemini CLI, Kiro, Claude code and others. 
+It was created as an experiment to understand the possibilities of AI and to test tools like Gemini CLI, Kiro, Claude Code, and others.
 
-I didn't wrote or changed a single line of code manually on this project. 
+I didn’t write or change a single line of code manually in this project
 
 
 ![5c3e807f-bfbb-43f9-8fc6-f63a47a7df6b_text](https://github.com/user-attachments/assets/204a703a-4db7-4a2d-81e9-ab07b933820f)

@@ -6,6 +6,68 @@ from datetime import datetime
 # =============================================================================
 SCREEN_WIDTH  = 800
 SCREEN_HEIGHT = 600
+
+# Available resolutions — index 0 is the default (800×600)
+RESOLUTIONS = [(800, 600), (1024, 768), (1280, 800)]
+
+def _calc_layout(w, h):
+    """Return a dict of all derived layout constants for a given (w, h)."""
+    return dict(
+        SCX              = w  // 2,
+        SCY              = h  // 2,
+        BOSS_SPAWN_LEFT  = w  // 4,
+        BOSS_SPAWN_RIGHT = w  * 3 // 4,
+        BOSS_START_Y     = h  // 6,
+        BOSS_NORMAL_YMAX = h  * 58 // 100,
+        BOSS_RAGE_YTOP   = h  // 5,
+        METEOR_MAG_RANGE = w  * 56 // 100,
+        HUD_BOTTOM       = h  - 24,
+        STAGE_BRIEF_Y    = h  * 72 // 100,
+        MENU_TITLE_Y     = h  *  5 // 100,
+        MENU_ZONE_TOP    = h  * 23 // 100,
+        MENU_ZONE_BOT    = h  * 70 // 100,
+        MENU_ITEM_H      = h  *  7 // 100,
+        MENU_FRAME_GAP   = h  *  2 // 100,
+        MENU_SCORES_Y    = h  * 73 // 100,
+        SETT_TITLE_Y     = h  *  8 // 100,
+        SETT_ROW_BASE    = h  * 24 // 100,
+        SETT_ROW_STEP    = h  * 15 // 100,
+        HUD_KW_Y         = h  * 10 // 100,
+        HUD_LIVES_Y      = h  *  4 // 100,
+    )
+
+def _apply_layout(w, h):
+    """Push derived layout values into the module's global namespace."""
+    g = globals()
+    g.update(_calc_layout(w, h))
+    g['SCREEN_WIDTH']  = w
+    g['SCREEN_HEIGHT'] = h
+
+# Initialise with default resolution
+_apply_layout(SCREEN_WIDTH, SCREEN_HEIGHT)
+
+# Derived layout constants — all positions scale from SCREEN_WIDTH / SCREEN_HEIGHT.
+SCX = SCREEN_WIDTH  // 2
+SCY = SCREEN_HEIGHT // 2
+BOSS_SPAWN_LEFT  = SCREEN_WIDTH  // 4
+BOSS_SPAWN_RIGHT = SCREEN_WIDTH  * 3 // 4
+BOSS_START_Y     = SCREEN_HEIGHT // 6
+BOSS_NORMAL_YMAX = SCREEN_HEIGHT * 58 // 100
+BOSS_RAGE_YTOP   = SCREEN_HEIGHT // 5
+METEOR_MAG_RANGE = SCREEN_WIDTH  * 56 // 100
+HUD_BOTTOM       = SCREEN_HEIGHT - 24
+STAGE_BRIEF_Y    = SCREEN_HEIGHT * 72 // 100
+MENU_TITLE_Y     = SCREEN_HEIGHT *  5 // 100
+MENU_ZONE_TOP    = SCREEN_HEIGHT * 23 // 100
+MENU_ZONE_BOT    = SCREEN_HEIGHT * 70 // 100
+MENU_ITEM_H      = SCREEN_HEIGHT *  7 // 100
+MENU_FRAME_GAP   = SCREEN_HEIGHT *  2 // 100
+MENU_SCORES_Y    = SCREEN_HEIGHT * 73 // 100
+SETT_TITLE_Y     = SCREEN_HEIGHT *  8 // 100
+SETT_ROW_BASE    = SCREEN_HEIGHT * 24 // 100
+SETT_ROW_STEP    = SCREEN_HEIGHT * 15 // 100
+HUD_KW_Y         = SCREEN_HEIGHT * 10 // 100
+HUD_LIVES_Y      = SCREEN_HEIGHT *  4 // 100
 SHIP_SPEED    = 6
 AU_TIME_MS    = 30000
 IDLE_LIMIT_MS = 5000
@@ -189,14 +251,17 @@ class Bullet:
 
 
 class Mortar:
-    def __init__(self, x, y, vx, vy):
+    def __init__(self, x, y, vx, vy, tier=1):
         self.x, self.y, self.vx, self.vy = x, y, vx, vy
+        self.tier      = tier
         self.rect      = pygame.Rect(x-10, y-10, 20, 20)
         self.detonated = False
+        self.travel    = 0   # frames in flight, used for visual pulse
 
     def update(self):
         self.x += self.vx
         self.y += self.vy
+        self.travel += 1
         self.rect.center = (int(self.x), int(self.y))
         if self.y <= 120:
             self.detonated = True
@@ -278,26 +343,155 @@ class Spaceship:
         screen.blit(surf, (bx, by))
 
 
+class Meteorite:
+    """Stage-3 enemy: rotating rock with a 1/5-perimeter weak spot.
+    Only bullets that strike within the hot arc deal damage.
+    Awards 250 points on destruction (10× normal enemy)."""
+    SCORE = 250
+    ARC_FRAC = 0.2   # 1/5 of the full circle is hittable
+
+    def __init__(self, stage=3):
+        self.radius  = random.randint(18, 28)
+        self.x       = float(random.randint(self.radius, SCREEN_WIDTH - self.radius))
+        self.y       = float(-self.radius * 2)
+        self.vy      = random.uniform(1.2, 2.2)   # same speed band as tanks
+        self.vx      = 0.0
+        self.hp      = 1
+        self.color   = (45, 45, 48) if stage <= 3 else (140, 80, 30)  # dark gray s1-3, rust-orange s4
+        # Rotation state
+        self.angle   = random.uniform(0, math.pi * 2)
+        self.spin    = random.choice([-1, 1]) * random.uniform(0.0085, 0.0185)  # half speed
+        # Hot arc: spans ARC_FRAC of the circle, offset is fixed relative to body
+        self.arc_offset = random.uniform(0, math.pi * 2)
+        # Jagged outline offsets (12 verts)
+        self.offsets = [self.radius * (0.82 + 0.36 * random.random()) for _ in range(12)]
+        self.rect    = pygame.Rect(int(self.x) - self.radius, int(self.y) - self.radius,
+                                   self.radius * 2, self.radius * 2)
+        self.pulse   = 0.0
+        self.hit_flash = 0
+        self.shudder   = 0
+
+    def _hot_arc_bounds(self):
+        """Return (start_angle, end_angle) of the hittable arc in world space."""
+        half = math.pi * self.ARC_FRAC
+        mid  = self.angle + self.arc_offset
+        return mid - half, mid + half
+
+    def is_hit_valid(self, bx, by):
+        """True if bullet centre (bx,by) lands within the hot arc."""
+        dx, dy = bx - self.x, by - self.y
+        bullet_angle = math.atan2(dy, dx)
+        a_start, a_end = self._hot_arc_bounds()
+        # Normalise bullet angle into [a_start, a_start+2π) window
+        diff = (bullet_angle - a_start) % (math.pi * 2)
+        arc_span = (a_end - a_start) % (math.pi * 2)
+        return diff <= arc_span
+
+    def hit(self):
+        self.hit_flash = 3
+        self.shudder   = 4
+        self.hp -= 1
+        return self.hp <= 0
+
+    def update(self, speed_mult=1.0, particles=None, player_pos=None):
+        self.angle  = (self.angle + self.spin * speed_mult) % (math.pi * 2)
+        self.pulse  = (self.pulse + 0.07) % (math.pi * 2)
+        # Magnetic attraction: nudge toward ship when within 4× max diameter (448px)
+        # Only applies while still on-screen — prevents off-screen meteorites drifting back
+        on_screen = (-self.radius < self.x < SCREEN_WIDTH + self.radius and
+                     -self.radius < self.y < SCREEN_HEIGHT + self.radius)
+        if player_pos is not None and on_screen:
+            dx, dy = player_pos[0] - self.x, player_pos[1] - self.y
+            dist = math.hypot(dx, dy)
+            if 0 < dist < METEOR_MAG_RANGE:
+                pull = 0.04 * (1.0 - dist / METEOR_MAG_RANGE)   # weak, fades with distance
+                self.vx += (dx / dist) * pull
+                self.vy += (dy / dist) * pull
+                # Cap speed so it never becomes a homing missile
+                spd = math.hypot(self.vx, self.vy)
+                if spd > 3.5:
+                    self.vx = self.vx / spd * 3.5
+                    self.vy = self.vy / spd * 3.5
+        self.x     += self.vx * speed_mult
+        self.y     += self.vy * speed_mult
+        if self.hit_flash > 0: self.hit_flash -= 1
+        if self.shudder   > 0: self.shudder   -= 1
+        self.rect.center = (int(self.x), int(self.y))
+        # Faint debris trail
+        if particles is not None and random.random() < 0.25:
+            particles.append(Particle(self.x + random.uniform(-self.radius*0.4, self.radius*0.4),
+                                      self.y + random.uniform(-self.radius*0.4, self.radius*0.4),
+                                      (80, 80, 85), speed=0.4))
+
+    def draw(self, screen):
+        sx = self.x + (random.randint(-3, 3) if self.shudder > 0 else 0)
+        sy = self.y + (random.randint(-3, 3) if self.shudder > 0 else 0)
+
+        # Jagged polygon rotated by self.angle — same style as normal enemies
+        pts = [(sx + self.offsets[i] * math.cos(self.angle + i * math.pi / 6),
+                sy + self.offsets[i] * math.sin(self.angle + i * math.pi / 6))
+               for i in range(12)]
+
+        # Body fill: dark gray (flash white on hit)
+        body_col = WHITE if self.hit_flash > 0 else self.color
+        pygame.draw.polygon(screen, body_col, pts)
+
+        # Pulsing outer glow (makes it stand out)
+        pulse_a = int(50 + 50 * abs(math.sin(self.pulse)))
+        gs = pygame.Surface((self.radius*2+14, self.radius*2+14), pygame.SRCALPHA)
+        pygame.draw.polygon(gs, (200, 60, 60, pulse_a),
+                            [(p[0]-sx+self.radius+7, p[1]-sy+self.radius+7) for p in pts], 4)
+        screen.blit(gs, (int(sx)-self.radius-7, int(sy)-self.radius-7))
+
+        # Perimeter segments: white = hot arc (1/5), red = dead zone (4/5)
+        # Hot arc spans verts whose angle falls within [a_start, a_end]
+        a_start, a_end = self._hot_arc_bounds()
+        for i in range(12):
+            vert_angle = (self.angle + i * math.pi / 6) % (math.pi * 2)
+            # Check if this vertex angle is inside the hot arc window
+            diff = (vert_angle - a_start) % (math.pi * 2)
+            arc_span = (a_end - a_start) % (math.pi * 2)
+            in_arc = diff <= arc_span
+            seg_col = WHITE if in_arc else RED
+            p1 = pts[i]
+            p2 = pts[(i + 1) % 12]
+            pygame.draw.line(screen, seg_col, (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])), 2)
+
+
 class Enemy:
     def __init__(self, is_tank=False, is_unbreakable=False, is_comet=False,
-                 is_warship=False, is_angled=False, target_pos=None, stage=1):
+                 is_warship=False, is_angled=False, is_yellow_drone=False, target_pos=None, stage=1):
         self.is_tank        = is_tank
         self.is_unbreakable = is_unbreakable
         self.is_comet       = is_comet
         self.is_warship     = is_warship
         self.is_angled      = is_angled
+        self.is_yellow_drone= is_yellow_drone
+        self.stage          = stage
         self.hp = 6 if is_tank else (10 if is_comet else (4 if is_warship else 1))
-        self.max_hp = self.hp
         if is_unbreakable:
             self.hp = 999
+        if is_yellow_drone:
+            self.hp = 3
+        self.max_hp = self.hp
         self.radius = (12 if is_comet else
                        (random.randint(45,60) if (is_tank or is_unbreakable) else
-                        (32 if is_warship else random.randint(18,28))))
+                        (32 if (is_warship or is_yellow_drone) else random.randint(18,28))))
+        # Stage 4: angled enemies are 30% larger
+        if is_angled and stage == 4:
+            self.radius = int(self.radius * 1.3)
         if is_comet:
             self.x, self.y = random.randint(0, SCREEN_WIDTH), -50
             ang = math.atan2(target_pos[1]-self.y, target_pos[0]-self.x)
-            self.vx, self.vy = math.cos(ang)*8, math.sin(ang)*8
+            self.vx, self.vy = math.cos(ang)*8.0, math.sin(ang)*8.0
             self.color = WHITE
+        elif is_yellow_drone:
+            self.x, self.y = random.randint(100, SCREEN_WIDTH-100), -50
+            self.vx, self.vy = random.choice([-4,4]), 2
+            self.color   = (20, 20, 20)
+            self.state   = "entry"
+            self.timer   = pygame.time.get_ticks() + 10000
+            self.last_shot = 0
         elif is_warship:
             self.x, self.y = random.randint(100, SCREEN_WIDTH-100), -50
             self.vx, self.vy = random.choice([-2,2]), 2
@@ -317,9 +511,12 @@ class Enemy:
             elif stage == 2:
                 self.color = ((80,0,0) if is_unbreakable else
                               ((0,50,100) if is_tank else (80,50,120)))
-            else:
+            elif stage == 3:
                 self.color = (S3_CORAL if is_unbreakable else
                               ((0,50,100) if is_tank else S3_GOLD))
+            else:  # stage 4
+                self.color = ((0,80,80) if is_unbreakable else
+                              ((100,85,15) if is_tank else (55,65,110)))
         self.offsets   = [self.radius*(0.8+0.4*random.random()) for _ in range(12)]
         self.rect      = pygame.Rect(self.x-self.radius, self.y-self.radius,
                                      self.radius*2, self.radius*2)
@@ -344,7 +541,8 @@ class Enemy:
                particles=None, speed_mult=1.0, sfx_enabled=True):
         if self.hit_flash > 0: self.hit_flash -= 1
         if self.shudder   > 0: self.shudder   -= 1
-        if self.is_warship:
+        if self.is_warship or self.is_yellow_drone:
+            laser_color = YELLOW if self.is_yellow_drone else RED
             if self.state == "entry":
                 self.y += self.vy
                 if self.y >= 100:
@@ -355,7 +553,7 @@ class Enemy:
                     self.vx *= -1
                 if now > self.last_shot + 1000:
                     bullets.append(Bullet(self.x, self.y+20, 'enemy_laser',
-                                          angle=math.pi, color=RED))
+                                          angle=math.pi, color=laser_color))
                     self.last_shot = now
                     if sfx_enabled and 'shoot_normal' in sounds:
                         sounds['shoot_normal'].play()
@@ -369,6 +567,15 @@ class Enemy:
         else:
             self.x += self.vx * speed_mult
             self.y += self.vy * speed_mult
+            # Stage 4: tank enemies have weak magnetic pull toward ship
+            if self.is_tank and self.stage == 4 and player_pos is not None:
+                dx, dy = player_pos[0]-self.x, player_pos[1]-self.y
+                dist = math.hypot(dx, dy)
+                if 0 < dist < METEOR_MAG_RANGE:
+                    pull = 0.03 * (1.0 - dist/METEOR_MAG_RANGE)
+                    self.vx += (dx/dist)*pull; self.vy += (dy/dist)*pull
+                    spd = math.hypot(self.vx, self.vy)
+                    if spd > 2.5: self.vx,self.vy = self.vx/spd*2.5, self.vy/spd*2.5
         self.rect.center = (int(self.x), int(self.y))
         if self.is_unbreakable:
             self.pulse = (self.pulse + 0.1) % (math.pi*2)
@@ -382,19 +589,21 @@ class Enemy:
     def draw(self, screen):
         sx = self.x + (random.randint(-4,4) if self.shudder > 0 else 0)
         sy = self.y + (random.randint(-4,4) if self.shudder > 0 else 0)
-        if self.is_warship:
+        if self.is_warship or self.is_yellow_drone:
+            acc = YELLOW if self.is_yellow_drone else RED
+            out = (60,60,20) if self.is_yellow_drone else (60,60,60)
             pts = [(sx,sy-25),(sx-15,sy-10),(sx-30,sy+10),(sx-10,sy+10),
                    (sx,sy+35),(sx+10,sy+10),(sx+30,sy+10),(sx+15,sy-10)]
             col = WHITE if self.hit_flash > 0 else (30,30,30)
             pygame.draw.polygon(screen, col, pts)
-            pygame.draw.polygon(screen, (60,60,60), pts, 2)
-            pygame.draw.polygon(screen, RED, [(sx,sy-10),(sx-15,sy+15),(sx+15,sy+15)])
-            pygame.draw.circle(screen, RED, (int(sx-28),int(sy+8)), 4)
-            pygame.draw.circle(screen, RED, (int(sx+28),int(sy+8)), 4)
-            pygame.draw.circle(screen, RED, (int(sx),   int(sy+32)), 5)
+            pygame.draw.polygon(screen, out, pts, 2)
+            pygame.draw.polygon(screen, acc, [(sx,sy-10),(sx-15,sy+15),(sx+15,sy+15)])
+            pygame.draw.circle(screen, acc, (int(sx-28),int(sy+8)), 4)
+            pygame.draw.circle(screen, acc, (int(sx+28),int(sy+8)), 4)
+            pygame.draw.circle(screen, acc, (int(sx),   int(sy+32)), 5)
             if self.state == "kamikaze":
                 for _ in range(3):
-                    pygame.draw.circle(screen, random.choice([ORANGE,YELLOW,WHITE]),
+                    pygame.draw.circle(screen, random.choice([acc,WHITE,(255,255,180)] if self.is_yellow_drone else [ORANGE,YELLOW,WHITE]),
                                        (int(sx),int(sy-20)), random.randint(5,12))
             return
         pts = [(sx+self.offsets[i]*math.cos(i*math.pi/6),
@@ -411,38 +620,100 @@ class Enemy:
 
 
 class BossPlanet:
-    def __init__(self, x, side_id):
-        self.radius = BOSS_RADIUS
-        self.x, self.y, self.hp, self.max_hp = x, 100, 200, 200
+    def __init__(self, x, side_id, stage=1):
+        self.stage = stage
+        self.radius = int(BOSS_RADIUS * 0.6)
+        self.x, self.y, self.hp, self.max_hp = x, BOSS_START_Y, 200, 200
         self.side_id, self.alpha = side_id, 0
-        self.vx = random.uniform(1.5,3.0) * (1 if side_id==0 else -1)
-        self.vy, self.last_move_change = random.uniform(-1.0,1.0), 0
-        self.offsets = [self.radius*(0.9+0.2*random.random()) for _ in range(24)]
-        self.rect    = pygame.Rect(self.x-self.radius, self.y-self.radius,
-                                   self.radius*2, self.radius*2)
+        self.vx = random.uniform(2.1,4.2) * (1 if side_id==0 else -1)
+        self.vy, self.last_move_change = random.uniform(-1.4,1.4), 0
+        self.rect = pygame.Rect(self.x-self.radius, self.y-self.radius,
+                                self.radius*2, self.radius*2)
         self.is_rage        = False
         self.shake_timer    = 0
         self.is_dying       = False
         self.death_timer    = 0
         self.rage_attack_timer = 0
+        self._rage_radius_target = int(BOSS_RADIUS * 0.3)
+        self._rage_descent_vy    = -0.6
+        # Per-stage palette: (body_dark, body_mid, spike_col, eye_fill, eye_glow)
+        self._pal = {
+            1: ((55,15,5),   (90,28,8),    (190,25,10),  (220,35,10),  (255,130,0)),   # volcanic
+            2: ((12,38,8),   (25,65,12),   (20,170,35),  (30,210,45),  (160,255,60)),  # toxic
+            3: ((18,8,28),   (32,10,42),   (155,0,185),  (195,0,225),  (255,80,255)),  # void/cursed
+        }
+        self._regen_shape()
+
+    def _regen_shape(self):
+        """Chunky irregular body blob + separate spike shard definitions, seeded for consistency."""
+        r = self.radius
+        random.seed(self.side_id * 1000 + self.stage * 100 + int(r))
+        # Body: 16-point angular blob — NOT circular, more like a rough rock
+        self._body_pts = []
+        n_body = 16
+        for i in range(n_body):
+            ang = i * math.pi * 2 / n_body
+            dist = r * (random.uniform(0.72, 0.92) if i % 2 == 0 else random.uniform(0.52, 0.74))
+            self._body_pts.append((dist, ang))
+        # Spikes: sharp triangular shards — more per stage
+        n_spikes = 10 + self.stage * 3   # 13 / 16 / 19
+        self._spikes = []
+        for _ in range(n_spikes):
+            ang    = random.uniform(0, math.pi*2)
+            length = r * random.uniform(0.50, 0.95)
+            width  = r * random.uniform(0.09, 0.20)
+            base_r = r * random.uniform(0.68, 0.88)
+            self._spikes.append((ang, length, width, base_r))
+        random.seed()
+
+    def _body_polygon(self, cx, cy):
+        return [(cx + d*math.cos(a), cy + d*math.sin(a)) for d,a in self._body_pts]
+
+    def _spike_triangles(self, cx, cy):
+        tris = []
+        for ang, length, width, base_r in self._spikes:
+            bx = cx + base_r * math.cos(ang);  by = cy + base_r * math.sin(ang)
+            tx = cx + (base_r+length) * math.cos(ang); ty = cy + (base_r+length) * math.sin(ang)
+            perp = ang + math.pi/2
+            lx = bx + width*math.cos(perp); ly = by + width*math.sin(perp)
+            rx = bx - width*math.cos(perp); ry = by - width*math.sin(perp)
+            tris.append(((int(tx),int(ty)), (int(lx),int(ly)), (int(rx),int(ry))))
+        return tris
 
     def update(self):
         now = pygame.time.get_ticks()
         if self.is_dying: return None
         if self.alpha < 255: self.alpha += 2
-        mf = 2000 if self.is_rage else 4000
-        if now - self.last_move_change > mf:
-            sr = (3.5,5.5) if self.is_rage else (1.5,3.0)
-            self.vx = random.uniform(*sr) * (1 if self.vx>0 else -1)
-            self.vy = random.uniform(-1.5,1.5)
-            self.last_move_change = now
-        self.x += self.vx; self.y += self.vy
-        if self.x < self.radius or self.x > SCREEN_WIDTH-self.radius: self.vx *= -1
-        if self.y < 50          or self.y > 350:                       self.vy *= -1
+
+        if self.is_rage:
+            if self.radius > self._rage_radius_target:
+                self.radius = max(self._rage_radius_target, self.radius - 0.25)
+                self._regen_shape()
+            mf = 2000
+            if now - self.last_move_change > mf:
+                self.vx = random.uniform(6.2, 9.7) * (1 if self.vx > 0 else -1)
+                self.vy = self._rage_descent_vy
+                self.last_move_change = now
+            self.x += self.vx; self.y += self.vy
+            if self.x < self.radius or self.x > SCREEN_WIDTH - self.radius: self.vx *= -1
+            if self.y < self.radius:
+                self.y = float(self.radius); self.vy = abs(self.vy)
+            elif self.y > BOSS_RAGE_YTOP:
+                self.y = float(BOSS_RAGE_YTOP); self.vy = -abs(self.vy)
+        else:
+            mf = 4000
+            if now - self.last_move_change > mf:
+                self.vx = random.uniform(2.1,4.2) * (1 if self.vx > 0 else -1)
+                self.vy = random.uniform(-1.4,1.4)
+                self.last_move_change = now
+            self.x += self.vx; self.y += self.vy
+            if self.x < self.radius or self.x > SCREEN_WIDTH-self.radius: self.vx *= -1
+            if self.y < 50          or self.y > BOSS_NORMAL_YMAX:         self.vy *= -1
+
         self.rect.center = (int(self.x), int(self.y))
         if self.shake_timer > 0: self.shake_timer -= 1
         if self.is_rage and now > self.rage_attack_timer:
-            self.rage_attack_timer = now + 4000
+            self.rage_attack_timer = now + 3000
             return "shockwave"
         return None
 
@@ -453,28 +724,84 @@ class BossPlanet:
             alpha = max(0, 255-(now-self.death_timer)//4)
         else:
             alpha = max(0, min(255, int(self.alpha)))
+
+        self.rect = pygame.Rect(int(self.x)-self.radius, int(self.y)-self.radius,
+                                self.radius*2, self.radius*2)
         sx = self.x + random.randint(-2,2) if self.shake_timer > 0 else self.x
         sy = self.y + random.randint(-2,2) if self.shake_timer > 0 else self.y
-        pts = [(sx+self.offsets[i]*math.cos(i*math.pi/12),
-                sy+self.offsets[i]*math.sin(i*math.pi/12)) for i in range(24)]
-        hv = int(self.hp)
+
+        pal = self._pal.get(self.stage, self._pal[1])
+        body_dark, body_mid, spike_col, eye_fill, eye_glow = pal
+
+        pulse = abs(math.sin(now * 0.006))
         if self.is_rage:
-            r = max(60,min(128,hv+40)); color,eye_col = (r,0,0),PURPLE
-        else:
-            color,eye_col = (max(0,min(255,hv+50)),50,50),RED
-        s = pygame.Surface((SCREEN_WIDTH,SCREEN_HEIGHT), pygame.SRCALPHA)
-        pygame.draw.polygon(s, (*color,alpha), pts)
-        pygame.draw.polygon(s, (255,255,255,alpha), pts, 2)
-        pygame.draw.rect(s, (*eye_col,alpha), (int(sx-25),int(sy-15),15,8))
-        pygame.draw.rect(s, (*eye_col,alpha), (int(sx+10), int(sy-15),15,8))
+            pr = int(80 + 70*pulse)
+            body_dark = (pr, 0, 0);  body_mid = (min(255,pr+40), 0, 0)
+            spike_col = (min(255,pr+80), 0, 0)
+            eye_glow  = (220, 0, 220); eye_fill = (200, 0, 0)
+
+        s = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+
+        # 1 — Spike shards behind body
+        for tri in self._spike_triangles(sx, sy):
+            pygame.draw.polygon(s, (*spike_col, min(alpha, 215)), tri)
+            pygame.draw.polygon(s, (5, 2, 8, min(alpha, 160)), tri, 1)
+
+        # 2 — Chunky body blob
+        body = self._body_polygon(sx, sy)
+        pygame.draw.polygon(s, (*body_dark, alpha), body)
+        # Subtle mid-tone inner face (offset toward top-left for cartoon shading)
+        inner = [(x + (sx-x)*0.14 - 1, y + (sy-y)*0.14 - 1) for x,y in body]
+        pygame.draw.polygon(s, (*body_mid, min(alpha, 140)), inner)
+        # Hard dark outline — key to the cartoon look
+        pygame.draw.polygon(s, (4, 2, 8, alpha), body, 3)
+
+        # 3 — Downward-pointing triangle eyes (fixed to face, not rotating)
+        r = self.radius
+        ew = r * 0.26        # half-width of each eye triangle
+        eh = r * 0.32        # height (tip points DOWN)
+        ey_top = sy - r * 0.10
+        gap    = r * 0.10    # gap between the two eyes
+
+        for sign in (-1, 1):
+            cx_e = sx + sign * (ew + gap * 0.5)
+            tl  = (int(cx_e - ew), int(ey_top))
+            tr  = (int(cx_e + ew), int(ey_top))
+            tip = (int(cx_e),      int(ey_top + eh))
+            # Glow halo (slightly larger triangle, drawn first)
+            gl = 3
+            glow_tri = [(tl[0]-gl, tl[1]-gl), (tr[0]+gl, tr[1]-gl), (tip[0], tip[1]+gl+1)]
+            pygame.draw.polygon(s, (*eye_glow, min(alpha, 255)), glow_tri, 3)
+            # Filled eye
+            pygame.draw.polygon(s, (*eye_fill, alpha), [tl, tr, tip])
+            # Bright top edge highlight
+            pygame.draw.line(s, (*eye_glow, min(alpha, 220)), tl, tr, 2)
+
+        # 4 — Rage pulsing outline
+        if self.is_rage and not self.is_dying:
+            ra = int(180 + 75*pulse)
+            pygame.draw.polygon(s, (ra, 0, 0, int(180*pulse)), body, 4)
+
         screen.blit(s, (0,0))
+
+        # 5 — Health bar
         if not self.is_dying:
             hbw = 100
             pygame.draw.rect(screen, DARK_GRAY,
-                             (int(self.x-hbw//2),int(self.y-self.radius-20),hbw,8))
+                             (int(self.x-hbw//2), int(self.y-self.radius-20), hbw, 8))
             pygame.draw.rect(screen, RED if not self.is_rage else YELLOW,
-                             (int(self.x-hbw//2),int(self.y-self.radius-20),
-                              int(hbw*(self.hp/self.max_hp)),8))
+                             (int(self.x-hbw//2), int(self.y-self.radius-20),
+                              int(hbw*(self.hp/self.max_hp)), 8))
+            if self.is_rage:
+                pulse_c = abs(math.sin(now * 0.005))
+                ca = int(160 + 95*pulse_c)
+                cy0 = int(self.y - self.radius - 36); cx0 = int(self.x)
+                for row in range(3):
+                    oy = cy0 + row*7
+                    chev = [(cx0-10+row*3, oy+7), (cx0, oy), (cx0+10-row*3, oy+7)]
+                    cs = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+                    pygame.draw.lines(cs, (255, 40, 40, ca - row*40), False, chev, 2)
+                    screen.blit(cs, (0,0))
 
 
 class BossProjectile:
@@ -549,8 +876,10 @@ class Planet:
             base = random.randint(20,50); self.color = (base,base,base+20)
         elif stage == 2:
             self.color = random.choice([L_BLUE,L_GREEN,L_PINK])
-        else:
+        elif stage == 3:
             self.color = random.choice([(78,82,92),(44,108,62),(52,72,138)])
+        else:  # stage 4 — dark mustard, dark green, light gray
+            self.color = random.choice([(110,90,20),(30,70,30),(180,185,190)])
         self.craters = [(random.randint(-self.radius//2,self.radius//2),
                          random.randint(-self.radius//2,self.radius//2),
                          random.randint(5,15)) for _ in range(5)]
@@ -597,8 +926,9 @@ class Game:
     def __init__(self):
         pygame.init()
         pygame.mixer.init()
+        os.environ['SDL_VIDEO_WINDOW_POS'] = 'center'
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("ULTRA SPACE ARCADE v0.13")
+        pygame.display.set_caption("ULTRA SPACE ARCADE v0.18")
         self.clock     = pygame.time.Clock()
         self.base_path = os.path.dirname(os.path.abspath(__file__))
         self.highscore_path = os.path.join(self.base_path, HIGHSCORE_FILE)
@@ -631,6 +961,7 @@ class Game:
         self.load_audio()          # populates self.title_tracks etc.
         self.load_highscores()
         self.load_settings()
+        self._apply_resolution()   # resize display to saved resolution
         self._create_vignette()
         self._create_hud_panel()
 
@@ -661,8 +992,10 @@ class Game:
             bc=[(55,55,65),(45,45,58)]; mc=[(170,170,190),(200,200,215)]; fc=[(90,185,255),(70,140,240),(140,210,255)]
         elif stage == 2:
             bc=[(65,25,25),(55,35,35)]; mc=[(210,170,160),(245,185,130)]; fc=[(255,90,70),(255,185,40),(245,130,80)]
-        else:
+        elif stage == 3:
             bc=[(50,50,20),(35,35,14)]; mc=[(200,200,130),(220,220,150)]; fc=[(255,245,80),(140,160,255),(235,235,210)]
+        else:  # stage 4 — void rift: yellow-white and blue stars
+            bc=[(20,20,35),(15,15,28)]; mc=[(200,200,160),(230,230,180)]; fc=[(255,250,180),(240,245,255),(80,140,255)]
         self.stars_bg  = mk(65,1,(0.18,0.45),bc)
         self.stars_mid = mk(45,1,(0.50,1.20),mc)
         self.stars_fg  = mk(22,2,(1.00,2.50),fc)
@@ -670,7 +1003,8 @@ class Game:
     def _init_nebulas(self, stage):
         palette = ([(45,0,75),(0,20,60),(10,10,50)]  if stage==1 else
                    [(65,0,0),(48,0,48),(0,28,58)]     if stage==2 else
-                   [(28,24,0),(22,26,4),(10,18,28)])
+                   [(28,24,0),(22,26,4),(10,18,28)]   if stage==3 else
+                   [(35,28,0),(28,22,0),(18,14,5)])
         self.nebulas = []
         for i in range(3):
             rx,ry = random.randint(110,195),random.randint(70,135)
@@ -725,6 +1059,9 @@ class Game:
     # ── Settings ──────────────────────────────────────────────────────────────
     def load_settings(self):
         self.sfx_enabled=True; self.music_enabled=True; self.trajectory_enabled=True
+        self.sfx_volume=0.55; self.music_volume=0.4
+        self.sfx_volume_saved=0.55; self.music_volume_saved=0.4
+        self.resolution_idx=0
         path=os.path.join(self.base_path,SETTINGS_FILE)
         if os.path.exists(path):
             try:
@@ -732,14 +1069,55 @@ class Game:
                 self.sfx_enabled        = bool(s.get('sfx_enabled',True))
                 self.music_enabled      = bool(s.get('music_enabled',True))
                 self.trajectory_enabled = bool(s.get('trajectory_enabled',True))
+                self.sfx_volume         = float(s.get('sfx_volume',0.55))
+                self.music_volume       = float(s.get('music_volume',0.4))
+                self.sfx_volume_saved   = float(s.get('sfx_volume_saved',0.55))
+                self.music_volume_saved = float(s.get('music_volume_saved',0.4))
+                self.resolution_idx     = int(s.get('resolution_idx',0)) % len(RESOLUTIONS)
             except Exception: pass
+        self._apply_volumes()
+
+    def _apply_volumes(self):
+        """Sync pygame mixer volumes from current settings state."""
+        for snd in self.sounds.values(): snd.set_volume(self.sfx_volume)
+        pygame.mixer.music.set_volume(self.music_volume)
+
+    def _apply_resolution(self):
+        """Resize the display and rebuild all resolution-dependent resources."""
+        w, h = RESOLUTIONS[self.resolution_idx]
+        _apply_layout(w, h)
+        os.environ['SDL_VIDEO_WINDOW_POS'] = 'center'
+        self.screen = pygame.display.set_mode((w, h))
+        # Rebuild fonts at new scale (base sizes designed for 600px height)
+        scale = h / 600.0
+        res = os.path.join(self.base_path, "Resourses")
+        def _font(n, s):
+            p = os.path.join(res, n)
+            return (pygame.font.Font(p, max(8, int(s * scale)))
+                    if os.path.exists(p) else pygame.font.SysFont("monospace", max(8, int(s * scale)), bold=True))
+        self.title_font     = _font("Masterpiece.ttf", 60)
+        self.misa_font      = _font("13_Misa.TTF", 22)
+        self.menu_font      = _font("Orbitron-VariableFont_wght.ttf", 20)
+        self.countdown_font = _font("Orbitron-VariableFont_wght.ttf", 48)
+        self.info_font      = _font("Epyval.ttf", 16)
+        self._create_vignette()
+        self._create_hud_panel()
+        self.init_stars(self.stage if hasattr(self,'stage') else 1)
+        self._init_nebulas(self.stage if hasattr(self,'stage') else 1)
+        self._init_pulsars(self.stage if hasattr(self,'stage') else 1)
+        self.save_settings()
 
     def save_settings(self):
         try:
             with open(os.path.join(self.base_path,SETTINGS_FILE),'w') as f:
                 json.dump({'sfx_enabled':self.sfx_enabled,
                            'music_enabled':self.music_enabled,
-                           'trajectory_enabled':self.trajectory_enabled},f,indent=2)
+                           'trajectory_enabled':self.trajectory_enabled,
+                           'sfx_volume':round(self.sfx_volume,2),
+                           'music_volume':round(self.music_volume,2),
+                           'sfx_volume_saved':round(self.sfx_volume_saved,2),
+                           'music_volume_saved':round(self.music_volume_saved,2),
+                           'resolution_idx':self.resolution_idx},f,indent=2)
         except Exception: pass
 
     # ── Multi-slot Save / Load ────────────────────────────────────────────────
@@ -915,7 +1293,7 @@ class Game:
             bo.last_move_change+=offset; bo.rage_attack_timer+=offset
             if bo.is_dying: bo.death_timer+=offset
         for en in self.enemies:
-            if en.is_warship: en.timer+=offset; en.last_shot+=offset
+            if en.is_warship or en.is_yellow_drone: en.timer+=offset; en.last_shot+=offset
 
     # ── Audio ─────────────────────────────────────────────────────────────────
     def load_audio(self):
@@ -928,8 +1306,16 @@ class Game:
 
         boss_p = os.path.join(self.music_path,"Boss")
         self.boss_tracks = (
-            [os.path.join(boss_p,f) for f in os.listdir(boss_p) if f.endswith('.mp3')]
+            [os.path.join(boss_p,f) for f in os.listdir(boss_p)
+             if f.endswith(('.mp3','.wav'))]
             if os.path.exists(boss_p) else [])
+
+        # Rage music pool — Music/Boss/Rage/
+        rage_p = os.path.join(self.music_path,"Boss","Rage")
+        self.rage_tracks = (
+            [os.path.join(rage_p,f) for f in os.listdir(rage_p)
+             if f.endswith(('.mp3','.wav'))]
+            if os.path.exists(rage_p) else [])
 
         # Title screen music pool — Music/Titles/
         title_p = os.path.join(self.music_path,"Titles")
@@ -948,7 +1334,7 @@ class Game:
             p = pool if pool else list(self.music_tracks)
             random.shuffle(p)
             self.stage_music_tracks[st] = p
-        self.stage_track_idx   = {1:0,2:0,3:0}
+        self.stage_track_idx   = {1:0,2:0,3:0,4:0}
         self.current_track_idx = 0
         self.music_stopped     = False
         pygame.mixer.music.set_volume(0.4)
@@ -970,6 +1356,8 @@ class Game:
                 p=os.path.join(self.effects_path,v)
                 if os.path.exists(p):
                     self.sounds[k]=pygame.mixer.Sound(p); self.sounds[k].set_volume(0.55)
+        # Apply persisted volumes (load_settings runs after load_audio, so we re-apply there)
+        # Volume sync happens in load_settings via _apply_volumes called after both are loaded
 
     def load_highscores(self):
         if os.path.exists(self.highscore_path):
@@ -999,10 +1387,17 @@ class Game:
         pygame.mixer.music.load(random.choice(self.title_tracks))
         pygame.mixer.music.play(-1)
 
-    def play_next_track(self, boss=False):
+    def play_next_track(self, boss=False, rage=False):
         """Advance gameplay music — stage-aware, reshuffles on wrap."""
         if not self.music_enabled: return
-        if boss:
+        if rage:
+            # Rage pool falls back to boss pool if folder is empty/missing
+            pool = self.rage_tracks if self.rage_tracks else self.boss_tracks
+            if pool:
+                pygame.mixer.music.stop()
+                pygame.mixer.music.load(random.choice(pool))
+                pygame.mixer.music.play()
+        elif boss:
             if self.boss_tracks:
                 pygame.mixer.music.load(random.choice(self.boss_tracks))
                 pygame.mixer.music.play()
@@ -1023,52 +1418,118 @@ class Game:
     def draw_menu_overlay(self, title, options, color, small_title=False):
         self.menu_count=len(options)
         ov=pygame.Surface((SCREEN_WIDTH,SCREEN_HEIGHT),pygame.SRCALPHA); ov.fill((0,0,0,180)); self.screen.blit(ov,(0,0))
+
+        # Title — prominent at top
         t=self.title_font.render(title,True,color)
-        self.screen.blit(t,(SCREEN_WIDTH//2-t.get_width()//2,55 if not small_title else 130))
+        self.screen.blit(t,(SCREEN_WIDTH//2-t.get_width()//2, MENU_TITLE_Y))
+
+        # Menu — vertically centred in the middle zone
+        zone_top, zone_bot = MENU_ZONE_TOP, MENU_ZONE_BOT
+        menu_item_h = MENU_ITEM_H
+        block_h = len(options) * menu_item_h
+        menu_top = zone_top + (zone_bot - zone_top - block_h) // 2
+        menu_bot = menu_top + block_h
+
+        # Framing lines — equal gap above and below the menu block
+        gap = MENU_FRAME_GAP
+        pygame.draw.line(self.screen,(40,60,100),(80, menu_top-gap),(SCREEN_WIDTH-80, menu_top-gap),1)
+        pygame.draw.line(self.screen,(40,60,100),(80, menu_bot+gap),(SCREEN_WIDTH-80, menu_bot+gap),1)
         for i,opt in enumerate(options):
             c=YELLOW if i==self.menu_idx else WHITE
             f=self.info_font if (self.state==STATE_CONTINUE or "YES" in opt) else self.menu_font
             img=f.render(("> "+opt+" <") if i==self.menu_idx else opt,True,c)
-            self.screen.blit(img,(SCREEN_WIDTH//2-img.get_width()//2,215+i*50))
+            self.screen.blit(img,(SCREEN_WIDTH//2-img.get_width()//2, menu_top+i*menu_item_h))
+
+        # Top Pilots — anchored to lower screen
         if self.state in (STATE_INTRO,STATE_GAME_OVER):
-            hy=215+len(options)*50+20
-            self.screen.blit(self.info_font.render("--- Top Pilots ---",True,CYAN),(SCREEN_WIDTH//2-80,hy))
+            hy = MENU_SCORES_Y
+            th=self.info_font.render("--- Top Pilots ---",True,CYAN)
+            self.screen.blit(th,(SCREEN_WIDTH//2-th.get_width()//2, hy))
             for i,hs in enumerate(self.highscores[:5]):
-                self.screen.blit(self.info_font.render(f"{i+1}. {hs['name']} - {hs['score']:07}",True,WHITE),
-                                 (SCREEN_WIDTH//2-90,hy+25+i*22))
+                row=self.info_font.render(f"{i+1}.  {hs['name']}  {hs['score']:07}",True,WHITE)
+                self.screen.blit(row,(SCREEN_WIDTH//2-row.get_width()//2, hy+20+i*20))
+            # Easter eggs
+            names = [hs['name'].upper() for hs in self.highscores]
+            has_fuck = 'FUCK' in names
+            has_nick = 'NICK' in names
+            egg_text = None
+            if has_fuck and has_nick:
+                egg_text = "Look man... i'm not happy about it" if (pygame.time.get_ticks()//5000)%2==0 else "It is: Nikos Georgousis"
+            elif has_fuck:
+                egg_text = "Look man... i'm not happy about it"
+            elif has_nick:
+                egg_text = "It is: Nikos Georgousis"
+            if egg_text:
+                eg = self.info_font.render(egg_text, True, (180, 180, 60))
+                self.screen.blit(eg, (SCREEN_WIDTH//2 - eg.get_width()//2, hy + 120))
+
         if self.state == STATE_INTRO:
-            # Bottom-right: F12 hint
-            hint=self.info_font.render("F12  Screenshot",True,DARK_GRAY)
-            self.screen.blit(hint,(SCREEN_WIDTH-hint.get_width()-10,SCREEN_HEIGHT-24))
-            # Bottom-left: M music toggle — colour reflects live state
             music_on = pygame.mixer.music.get_busy()
             m_col  = (60,200,80) if music_on else (180,60,60)
-            m_hint = self.info_font.render(
-                "M  Music " + ("ON" if music_on else "OFF"), True, m_col)
-            self.screen.blit(m_hint,(10,SCREEN_HEIGHT-24))
+            m_hint = self.info_font.render("M  Music " + ("ON" if music_on else "OFF"), True, m_col)
+            self.screen.blit(m_hint,(10,HUD_BOTTOM))
+            pulse_a = int(160 + 95 * abs(math.sin(pygame.time.get_ticks() * 0.0015)))
+            cr_surf = self.info_font.render("v0.18      Created by Nikos Georgousis", True, WHITE)
+            cr_alpha = pygame.Surface(cr_surf.get_size(), pygame.SRCALPHA)
+            cr_alpha.fill((0,0,0,0)); cr_alpha.blit(cr_surf,(0,0)); cr_alpha.set_alpha(pulse_a)
+            self.screen.blit(cr_alpha,(SCREEN_WIDTH - cr_surf.get_width() - 10, HUD_BOTTOM))
+
 
     def _draw_settings_menu(self):
-        self.menu_count=4
+        self.menu_count=5
         ov=pygame.Surface((SCREEN_WIDTH,SCREEN_HEIGHT),pygame.SRCALPHA); ov.fill((0,0,0,195)); self.screen.blit(ov,(0,0))
-        t=self.title_font.render("SETTINGS",True,CYAN); self.screen.blit(t,(SCREEN_WIDTH//2-t.get_width()//2,60))
-        pygame.draw.line(self.screen,DARK_GRAY,(150,145),(650,145),1)
-        rows=[("SFX","ON" if self.sfx_enabled else "OFF",GREEN if self.sfx_enabled else RED),
-              ("MUSIC","ON" if self.music_enabled else "OFF",GREEN if self.music_enabled else RED),
-              ("TRAJECTORY","ON" if self.trajectory_enabled else "OFF",GREEN if self.trajectory_enabled else RED),
-              ("BACK","",WHITE)]
-        for i,(label,val,vc) in enumerate(rows):
-            y=220+i*62; sel=(i==self.menu_idx); sc=YELLOW if sel else WHITE
-            px2=">  " if sel else "   "; sx2="  <" if sel else ""
-            if val:
-                lbl=self.menu_font.render(f"{px2}{label}:",True,sc)
-                vl =self.menu_font.render(f"  {val}{sx2}",True,vc)
+        t=self.title_font.render("SETTINGS",True,CYAN); self.screen.blit(t,(SCREEN_WIDTH//2-t.get_width()//2,SETT_TITLE_Y))
+        sep_y = SETT_TITLE_Y + t.get_height() + 6
+        pygame.draw.line(self.screen,DARK_GRAY,(SCREEN_WIDTH//5, sep_y),(SCREEN_WIDTH*4//5, sep_y),1)
+
+        w,h = RESOLUTIONS[self.resolution_idx]
+        res_str = "%dx%d" % (w, h)
+        row_defs=[
+            ("SFX",        self.sfx_enabled,        self.sfx_volume,  True,  False),
+            ("MUSIC",      self.music_enabled,       self.music_volume,True,  False),
+            ("TRAJECTORY", self.trajectory_enabled,  None,             False, False),
+            ("RESOLUTION", None,                     None,             False, True),
+            ("BACK",       None,                     None,             False, False),
+        ]
+        row_base = SETT_ROW_BASE   # ~144 @ 600
+        row_step = SETT_ROW_STEP   # ~90 @ 600
+        # With 5 rows and sliders on rows 0+1, compress step slightly so BACK fits
+        row_step5 = SCREEN_HEIGHT * 12 // 100
+        y_positions = [row_base + i*row_step5 for i in range(5)]
+        for i,(label,enabled,vol,has_slider,is_res) in enumerate(row_defs):
+            y=y_positions[i]; sel=(i==self.menu_idx); sc=YELLOW if sel else WHITE
+            px=">  " if sel else "   "; sx="  <" if sel else ""
+            if label=="BACK":
+                bk=self.menu_font.render(f"{px}BACK{sx}",True,sc)
+                self.screen.blit(bk,(SCREEN_WIDTH//2-bk.get_width()//2,y))
+            elif is_res:
+                lbl=self.menu_font.render(f"{px}RESOLUTION:",True,sc)
+                vl =self.menu_font.render(f"  {res_str}{sx}",True,CYAN if sel else WHITE)
                 tot=lbl.get_width()+vl.get_width(); lx=SCREEN_WIDTH//2-tot//2
                 self.screen.blit(lbl,(lx,y)); self.screen.blit(vl,(lx+lbl.get_width(),y))
             else:
-                bk=self.menu_font.render(f"{px2}BACK{sx2}",True,sc)
-                self.screen.blit(bk,(SCREEN_WIDTH//2-bk.get_width()//2,y))
-        hint=self.info_font.render("ENTER / SPACE  toggle   |   ESC  back   |   F12  screenshot",True,DARK_GRAY)
-        self.screen.blit(hint,(SCREEN_WIDTH//2-hint.get_width()//2,535))
+                val_str="ON" if enabled else "OFF"
+                vc=GREEN if enabled else RED
+                lbl=self.menu_font.render(f"{px}{label}:",True,sc)
+                vl =self.menu_font.render(f"  {val_str}{sx}",True,vc)
+                tot=lbl.get_width()+vl.get_width(); lx=SCREEN_WIDTH//2-tot//2
+                self.screen.blit(lbl,(lx,y)); self.screen.blit(vl,(lx+lbl.get_width(),y))
+                if has_slider:
+                    bw=220; bh=8; bx=SCREEN_WIDTH//2-bw//2; by=y+34
+                    pygame.draw.rect(self.screen,DARK_GRAY,(bx,by,bw,bh),border_radius=4)
+                    fill_w=int(bw*vol)
+                    bar_col=(GREEN if vol>0.5 else (YELLOW if vol>0.2 else RED)) if enabled else (50,50,50)
+                    if fill_w>0: pygame.draw.rect(self.screen,bar_col,(bx,by,fill_w,bh),border_radius=4)
+                    pygame.draw.rect(self.screen,(80,80,100),(bx,by,bw,bh),1,border_radius=4)
+                    for t in range(1,10):
+                        tx=bx+int(bw*t*0.1)
+                        pygame.draw.line(self.screen,(40,40,60),(tx,by),(tx,by+bh))
+                    kx=bx+fill_w; pygame.draw.circle(self.screen,WHITE if sel else (160,160,180),(kx,by+bh//2),6)
+                    pct=self.info_font.render(f"{int(vol*100)}%",True,sc if sel else (120,120,140))
+                    self.screen.blit(pct,(bx+bw+8,by-2))
+
+        hint=self.info_font.render("ENTER/SPACE toggle  |  LEFT/RIGHT adjust  |  ESC back",True,DARK_GRAY)
+        self.screen.blit(hint,(SCREEN_WIDTH//2-hint.get_width()//2, HUD_BOTTOM))
 
     def handle_highscore_transition(self):
         is_hs=(self.score>=2000 and (len(self.highscores)<5 or self.score>self.highscores[-1]['score']))
@@ -1078,11 +1539,15 @@ class Game:
     def trigger_keyword(self, word):
         self.play_sfx('powerup')
         if word=="LIFE":   self.lives=min(6,self.lives+1); self.keyword_progress[word]=[False]*len(word)
-        elif word=="ZAPP": self.zapp_y=SCREEN_HEIGHT; self.zapp_active=True; self.zapp_cooldown_timer=pygame.time.get_ticks()+16000; self.play_sfx('zap')
+        elif word=="ZAPP":
+            self.zapp_y=SCREEN_HEIGHT; self.zapp_active=True
+            self.zapp_cooldown_timer=pygame.time.get_ticks()+16000
+            self.zapp_ready_timer=pygame.time.get_ticks()+10000
+            self.play_sfx('zap')
         elif word=="BOOST":self.warp_timer=pygame.time.get_ticks()+WARP_DURATION_MS; self.keyword_progress[word]=[False]*len(word); self.play_sfx('warp')
 
     def reset_game(self, full=False):
-        self.bullets=[]; self.enemies=[]; self.powerups=[]; self.letters=[]
+        self.bullets=[]; self.enemies=[]; self.powerups=[]; self.letters=[]; self.meteorites=[]
         self.boss_bullets=[]; self.mortars=[]; self.paused=False; self.stage_cleared=False; self.pause_time=0
         self.ship_ready_time=pygame.time.get_ticks(); self.music_stopped=False
         self.idle_timer=pygame.time.get_ticks(); self.last_ship_pos=(0,0); self.unbreakable_hits=0
@@ -1098,6 +1563,11 @@ class Game:
         self.shield_hp=0; self.shield_timer=0; self.esc_pause_start=0
         self.hud_jitter=0; self.hud_visible=True; self.save_flash=0; self.show_hotkeys=False
         self.settings_origin=STATE_INTRO
+        self.rage_flash_timer=0; self.stage_briefing_timer=0
+        self.shield_hint_timer=0; self.shield_hint_count=0
+        self.zapp_ready_timer=0; self.boss_rage_active=False
+        self.yellow_drone_timer=0  # stage 4: next yellow drone spawn time
+        self.warship_spawned_count=0  # stage 4: counts red warships spawned, yellow drone every 7th
         if full:
             self.ship,self.score,self.lives,self.nukes=Spaceship(),0,3,1
             self.weapon,self.stage,self.frames='normal',1,0
@@ -1105,12 +1575,14 @@ class Game:
             self.display_score=0; self.dev_weapons_maxed=False
             random.shuffle(self.music_tracks)
             for pool in self.stage_music_tracks.values(): random.shuffle(pool)
-            self.stage_track_idx={1:0,2:0,3:0}; self.current_track_idx=0
+            self.stage_track_idx={1:0,2:0,3:0,4:0}; self.current_track_idx=0
+        self.stage_briefing_timer=pygame.time.get_ticks()+3500
         if self.state==STATE_PLAYING: self.play_next_track()
 
     def trigger_victory(self):
-        self.bullets=[]; self.enemies=[]; self.boss_bullets=[]; self.mortars=[]; self.powerups=[]; self.letters=[]
+        self.bullets=[]; self.enemies=[]; self.boss_bullets=[]; self.mortars=[]; self.powerups=[]; self.letters=[]; self.meteorites=[]
         self.state=STATE_VICTORY; self.victory_timer=pygame.time.get_ticks()
+        self.boss_rage_active=False
         pygame.mixer.music.stop()
         sp=os.path.join(self.music_path,"Stage")
         if os.path.exists(sp):
@@ -1127,7 +1599,7 @@ class Game:
                         (0.2 if self.boss_mode and not self.boss_intro_done else 1.0))
 
             if self.state==STATE_PLAYING and not self.paused and not pygame.mixer.music.get_busy():
-                self.play_next_track(self.boss_mode)
+                self.play_next_track(self.boss_mode, rage=self.boss_rage_active)
 
             off=((random.randint(-self.shake,self.shake),random.randint(-self.shake,self.shake))
                  if self.shake>0 else (0,0))
@@ -1232,7 +1704,7 @@ class Game:
                                     if self.esc_pause_start>0: self._adjust_timers(now-self.esc_pause_start); self.esc_pause_start=0
                                 elif self.menu_idx==1: self._open_save_menu()
                                 elif self.menu_idx==2:
-                                    self.settings_origin=STATE_PAUSED; self.state=STATE_SETTINGS; self.menu_idx=0; self.menu_count=4
+                                    self.settings_origin=STATE_PAUSED; self.state=STATE_SETTINGS; self.menu_idx=0; self.menu_count=5
                                 else:
                                     self.state=STATE_INTRO; self.menu_count=3
                                     pygame.mixer.music.stop(); self.play_title_music()
@@ -1315,16 +1787,51 @@ class Game:
                     elif self.state==STATE_SETTINGS:
                         if e.key==pygame.K_UP:   self.menu_idx=(self.menu_idx-1)%self.menu_count; self.play_sfx('blip')
                         elif e.key==pygame.K_DOWN: self.menu_idx=(self.menu_idx+1)%self.menu_count; self.play_sfx('blip')
-                        elif e.key in (pygame.K_RETURN,pygame.K_SPACE,pygame.K_LEFT,pygame.K_RIGHT):
-                            if self.menu_idx==0:
-                                self.sfx_enabled=not self.sfx_enabled; self.play_sfx('blip'); self.save_settings()
-                            elif self.menu_idx==1:
-                                self.music_enabled=not self.music_enabled
-                                if not self.music_enabled: pygame.mixer.music.stop()
-                                self.save_settings(); self.play_sfx('blip')
+                        elif e.key in (pygame.K_LEFT,pygame.K_RIGHT):
+                            delta=0.1 if e.key==pygame.K_RIGHT else -0.1
+                            if self.menu_idx==0:   # SFX slider
+                                self.sfx_volume=round(max(0.0,min(1.0,self.sfx_volume+delta)),2)
+                                self.sfx_enabled=(self.sfx_volume>0)
+                                if self.sfx_enabled: self.sfx_volume_saved=self.sfx_volume
+                                for snd in self.sounds.values(): snd.set_volume(self.sfx_volume)
+                                self.play_sfx('blip'); self.save_settings()
+                            elif self.menu_idx==1: # MUSIC slider
+                                self.music_volume=round(max(0.0,min(1.0,self.music_volume+delta)),2)
+                                self.music_enabled=(self.music_volume>0)
+                                if self.music_enabled: self.music_volume_saved=self.music_volume
+                                else: pygame.mixer.music.stop()
+                                pygame.mixer.music.set_volume(self.music_volume)
+                                self.play_sfx('blip'); self.save_settings()
+                            elif self.menu_idx==3: # RESOLUTION cycle
+                                step=1 if e.key==pygame.K_RIGHT else -1
+                                self.resolution_idx=(self.resolution_idx+step)%len(RESOLUTIONS)
+                                self._apply_resolution(); self.play_sfx('blip')
+                        elif e.key in (pygame.K_RETURN,pygame.K_SPACE):
+                            if self.menu_idx==0:   # SFX toggle
+                                if self.sfx_enabled:
+                                    self.sfx_volume_saved=self.sfx_volume; self.sfx_volume=0.0
+                                    self.sfx_enabled=False
+                                    for snd in self.sounds.values(): snd.set_volume(0.0)
+                                else:
+                                    self.sfx_volume=self.sfx_volume_saved if self.sfx_volume_saved>0 else 0.55
+                                    self.sfx_enabled=True
+                                    for snd in self.sounds.values(): snd.set_volume(self.sfx_volume)
+                                self.play_sfx('blip'); self.save_settings()
+                            elif self.menu_idx==1: # MUSIC toggle
+                                if self.music_enabled:
+                                    self.music_volume_saved=self.music_volume; self.music_volume=0.0
+                                    self.music_enabled=False; pygame.mixer.music.stop()
+                                else:
+                                    self.music_volume=self.music_volume_saved if self.music_volume_saved>0 else 0.4
+                                    self.music_enabled=True
+                                    pygame.mixer.music.set_volume(self.music_volume)
+                                self.play_sfx('blip'); self.save_settings()
                             elif self.menu_idx==2:
                                 self.trajectory_enabled=not self.trajectory_enabled; self.save_settings(); self.play_sfx('blip')
-                            else:
+                            elif self.menu_idx==3: # RESOLUTION cycle (ENTER also cycles)
+                                self.resolution_idx=(self.resolution_idx+1)%len(RESOLUTIONS)
+                                self._apply_resolution(); self.play_sfx('blip')
+                            else: # BACK (idx 4)
                                 self.play_sfx('blip'); self.state=self.settings_origin; self.menu_idx=0
                                 self.menu_count=3 if self.settings_origin==STATE_INTRO else 4
                         elif e.key==pygame.K_ESCAPE:
@@ -1352,13 +1859,13 @@ class Game:
                                     if   self.menu_idx==0: self.state=STATE_PLAYING; self.reset_game(True)
                                     elif self.menu_idx==1: self._open_load_menu()
                                     elif self.menu_idx==2:
-                                        self.settings_origin=STATE_INTRO; self.state=STATE_SETTINGS; self.menu_idx=0; self.menu_count=4
+                                        self.settings_origin=STATE_INTRO; self.state=STATE_SETTINGS; self.menu_idx=0; self.menu_count=5
                                     else: pygame.quit(); sys.exit()
                                 else:
                                     # 0=START 1=SETTINGS 2=QUIT
                                     if   self.menu_idx==0: self.state=STATE_PLAYING; self.reset_game(True)
                                     elif self.menu_idx==1:
-                                        self.settings_origin=STATE_INTRO; self.state=STATE_SETTINGS; self.menu_idx=0; self.menu_count=4
+                                        self.settings_origin=STATE_INTRO; self.state=STATE_SETTINGS; self.menu_idx=0; self.menu_count=5
                                     else: pygame.quit(); sys.exit()
                             elif self.state==STATE_CONTINUE:
                                 if self.menu_idx==0:
@@ -1386,7 +1893,7 @@ class Game:
                     if self.distance<self.target_distance: self.distance+=(dt/AU_TIME_MS)*speed_mult
                     if self.distance>=BOSS_TRIGGER_AU and not self.boss_mode:
                         self.boss_mode=True; pygame.mixer.music.fadeout(2000)
-                        self.bosses=[BossPlanet(200,0),BossPlanet(600,1)]; self.flare_timer=now+10000
+                        self.bosses=[BossPlanet(BOSS_SPAWN_LEFT,0,self.stage),BossPlanet(BOSS_SPAWN_RIGHT,1,self.stage)]; self.flare_timer=now+10000
                     if self.boss_mode and all(b.alpha>=255 for b in self.bosses): self.boss_intro_done=True
 
                     ks=pygame.key.get_pressed(); self.ship.move(ks)
@@ -1400,18 +1907,27 @@ class Game:
                     if (self.ship.x,self.ship.y)!=self.last_ship_pos: self.idle_timer=now; self.last_ship_pos=(self.ship.x,self.ship.y)
                     if now-self.idle_timer>IDLE_LIMIT_MS and len([en for en in self.enemies if en.is_comet])<3:
                         self.enemies.append(Enemy(is_comet=True,target_pos=(self.ship.x+35,self.ship.y+40))); self.idle_timer=now; self.play_sfx('warning')
+                    # Stage 4: yellow drone spawns every 7th red warship, only if warship on screen
                     if not self.ship.is_entering and ks[pygame.K_SPACE]: self.fire()
 
                     sp=(0.02+self.stage*0.006)*(1.3 if self.stage==2 else 1.0)
                     if self.stage==2 and self.distance>=5.0: sp*=1.2
                     sp*=(1.3 if self.distance>=8.0 else (1.2 if self.distance>=6.0 else 1.0))
                     if random.random()<sp*speed_mult and not self.boss_mode:
-                        if self.stage in (2,3) and random.random()<0.03:
+                        if self.stage in (2,3,4) and random.random()<0.03:
                             self.enemies.append(Enemy(is_warship=True,stage=self.stage))
+                            if self.stage==4:
+                                self.warship_spawned_count+=1
+                                if self.warship_spawned_count%7==0 and not any(en.is_yellow_drone for en in self.enemies) and any(en.is_warship for en in self.enemies):
+                                    self.enemies.append(Enemy(is_yellow_drone=True,stage=4))
                         elif random.random()<0.05 and not any(en.is_unbreakable for en in self.enemies):
                             self.enemies.append(Enemy(is_unbreakable=True,stage=self.stage))
                         elif self.stage==3 and random.random()<0.30:
                             self.enemies.append(Enemy(is_angled=True,stage=3))
+                        elif self.stage==4 and random.random()<0.60:
+                            self.enemies.append(Enemy(is_angled=True,stage=4))
+                        elif self.stage>=3 and random.random()<0.12:
+                            self.meteorites.append(Meteorite(stage=self.stage))
                         else:
                             self.enemies.append(Enemy(is_tank=random.random()<0.12,stage=self.stage))
 
@@ -1448,7 +1964,7 @@ class Game:
                                 il='laser' in b.w_key
                                 if not il and b in self.bullets: self.bullets.remove(b)
                                 self.create_explosion(b.x,b.y,b.config['color'],5)
-                                self.play_sfx('hit_tank' if (en.is_tank or en.is_unbreakable or en.is_comet or en.is_warship) else 'hit_normal')
+                                self.play_sfx('hit_tank' if (en.is_tank or en.is_unbreakable or en.is_comet or en.is_warship or en.is_yellow_drone) else 'hit_normal')
                                 if en.is_unbreakable: self.unbreakable_hits+=1
                                 elif en.is_tank:
                                     if self.unbreakable_hits<10: self.unbreakable_hits=0
@@ -1456,16 +1972,20 @@ class Game:
                                 if en.hit():
                                     self.create_explosion(en.x,en.y,en.color,20)
                                     self.play_sfx('boom_tank' if en.is_tank else 'boom_normal')
+                                    if en.is_yellow_drone:
+                                        self.score+=200; self.powerups.append(PowerUp(en.x,en.y,'ghost'))
+                                        self.enemies.remove(en)
+                                        if not il: break
+                                        continue
                                     self.score+=150 if en.is_tank else 25
                                     if en.is_tank and self.unbreakable_hits>=10:
                                         self.powerups.append(PowerUp(en.x,en.y,'drone')); self.unbreakable_hits=0
                                     if random.random()<0.1:
-                                        needed=[w for w,p in self.keyword_progress.items() if False in p or (w=="ZAPP" and not self.zapp_active)]
-                                        if needed:
-                                            word=random.choice(needed); missing=[i for i,v in enumerate(self.keyword_progress[word]) if not v]
-                                            if missing: self.letters.append(LetterItem(en.x,en.y,word[random.choice(missing)]))
+                                        _all_chars=list({c for w in self.keyword_progress for c in w})
+                                        self.letters.append(LetterItem(en.x,en.y,random.choice(_all_chars)))
                                     if random.random()<0.18:
-                                        pt=('nuke' if random.random()<0.2 else (random.choice(list(WEAPONS.keys())[1:5]) if random.random()<0.8 else 'shield'))
+                                        wdrop = 0.45 if self.stage==4 else 0.8
+                                        pt=('nuke' if random.random()<0.2 else (random.choice(list(WEAPONS.keys())[1:5]) if random.random()<wdrop else 'shield'))
                                         self.powerups.append(PowerUp(en.x,en.y,pt))
                                     self.enemies.remove(en)
                                 if not il: break
@@ -1479,7 +1999,12 @@ class Game:
                                 if bo.hp<=0:
                                     bo.is_dying=True; bo.death_timer=now; self.score+=5000
                                     rem=[b2 for b2 in self.bosses if not b2.is_dying]
-                                    if len(rem)==1: rem[0].is_rage=True
+                                    if len(rem)==1:
+                                        rem[0].is_rage=True
+                                        rem[0].hp=rem[0].max_hp   # full HP refill on rage
+                                        self.rage_flash_timer=now+2500
+                                        self.boss_rage_active=True
+                                        self.play_next_track(rage=True)
                                 if not il: break
                         for bb in self.boss_bullets[:]:
                             if bb.rect.colliderect(b.rect):
@@ -1515,6 +2040,47 @@ class Game:
                                     self.create_explosion(self.ship.x+35,self.ship.y+40,RED,40); self.play_sfx('boom_ship')
                                     pygame.mixer.music.fadeout(400); self.paused=True; self.pause_time=now; self.enemies.remove(en)
 
+                    # ── Meteorites ────────────────────────────────────────────
+                    for mt in self.meteorites[:]:
+                        mt.update(speed_mult, self.particles, player_pos=(self.ship.x+35, self.ship.y+40))
+                        mt.draw(self.screen)
+                        # Zapp / warp instant-kill
+                        if (self.zapp_y is not None and mt.y>self.zapp_y) or (self.warp_timer>now and mt.rect.colliderect(self.ship.rect)):
+                            self.create_explosion(mt.x,mt.y,WHITE,12); self.meteorites.remove(mt); self.score+=Meteorite.SCORE; continue
+                        if mt.y>SCREEN_HEIGHT+100 or mt.x<-120 or mt.x>SCREEN_WIDTH+120: self.meteorites.remove(mt); continue
+                        # Ship collision
+                        if not self.ship.is_invulnerable(self.warp_timer>now) and mt.rect.colliderect(self.ship.rect):
+                            if self.shield_active:
+                                self.shield_hp-=1; self.play_sfx('hit_tank')
+                                self.create_explosion(self.ship.x+35,self.ship.y+40,CYAN,10); self.meteorites.remove(mt)
+                                if self.shield_hp<=0: self.shield_active=False
+                            else:
+                                self.lives-=1; self.shake=25; self.impact_flash=now+100; self.hit_shockwave=0; self.hud_jitter=now+500
+                                if self.lives<=0:
+                                    self.state=STATE_DEATH_SEQUENCE; self.death_timer=now; self.killer_enemy=mt; pygame.mixer.music.stop()
+                                else:
+                                    self.create_explosion(self.ship.x+35,self.ship.y+40,RED,40); self.play_sfx('boom_ship')
+                                    pygame.mixer.music.fadeout(400); self.paused=True; self.pause_time=now; self.meteorites.remove(mt)
+                        # Bullet collision — only valid if bullet hits the hot arc
+                    for b in self.bullets[:]:
+                        for mt in self.meteorites[:]:
+                            if mt.rect.colliderect(b.rect):
+                                il='laser' in b.w_key
+                                if not il and b in self.bullets: self.bullets.remove(b)
+                                if mt.is_hit_valid(b.x, b.y):
+                                    self.create_explosion(b.x,b.y,WHITE,8); self.play_sfx('hit_tank')
+                                    if mt.hit():
+                                        self.create_explosion(mt.x,mt.y,(180,180,200),25)
+                                        self.play_sfx('boom_tank'); self.score+=Meteorite.SCORE
+                                        if random.random()<0.15:
+                                            _all_chars=list({c for w in self.keyword_progress for c in w})
+                                            self.letters.append(LetterItem(mt.x,mt.y,random.choice(_all_chars)))
+                                        self.meteorites.remove(mt)
+                                else:
+                                    # Bullet deflected — spark effect only
+                                    self.create_explosion(b.x,b.y,RED,4)
+                                if not il: break
+
                     for bb in self.boss_bullets[:]:
                         bb.update(); bb.draw(self.screen)
                         if bb.rect.colliderect(self.ship.rect) and not self.ship.is_invulnerable(self.warp_timer>now):
@@ -1537,7 +2103,10 @@ class Game:
                         if p.rect.colliderect(self.ship.rect):
                             self.play_sfx('powerup')
                             if   p.p_type=='nuke':   self.nukes+=1
-                            elif p.p_type=='shield': self.shields+=1
+                            elif p.p_type=='shield':
+                                self.shields+=1
+                                self.shield_hint_count=self.shields
+                                self.shield_hint_timer=now+10000
                             elif p.p_type=='drone':  self.drone_timer=now+DRONE_DURATION_MS
                             elif p.p_type=='ghost':  self.ghost_fires=GHOST_MAX_FIRES
                             else:
@@ -1546,41 +2115,90 @@ class Game:
                                     elif self.weapon_tier<2: self.weapon_tier=2
                                     else:
                                         cx,cy=self.ship.x+35,self.ship.y
-                                        self.mortars.extend([Mortar(cx,cy,-5,-5),Mortar(cx,cy,5,-5)]); self.play_sfx('boom_nuke')
+                                        self.mortars.extend([Mortar(cx,cy,-5,-5,self.weapon_tier),Mortar(cx,cy,5,-5,self.weapon_tier)]); self.play_sfx('boom_nuke')
                                 elif self.weapon=='super_laser' and p.p_type=='laser':
                                     cx,cy=self.ship.x+35,self.ship.y
-                                    self.mortars.extend([Mortar(cx,cy,-5,-5),Mortar(cx,cy,5,-5)]); self.play_sfx('boom_nuke')
+                                    self.mortars.extend([Mortar(cx,cy,-5,-5,2),Mortar(cx,cy,5,-5,2)]); self.play_sfx('boom_nuke')
                                 else:
                                     self.weapon=p.p_type; self.weapon_tier=2 if self.dev_weapons_maxed else 1
                             self.powerups.remove(p)
                         elif p.y>SCREEN_HEIGHT: self.powerups.remove(p)
 
                     for m in self.mortars[:]:
-                        m.update(); pygame.draw.circle(self.screen,ORANGE,(int(m.x),int(m.y)),10); pygame.draw.circle(self.screen,WHITE,(int(m.x),int(m.y)),6)
+                        m.update()
+                        ix,iy=int(m.x),int(m.y)
+                        if m.tier>=2:
+                            # Tier-2+ in-flight: pulsing danger ring shows blast radius
+                            blast_r=160
+                            ring_a=int(60+40*abs(math.sin(m.travel*0.25)))
+                            ring_surf=pygame.Surface((blast_r*2+4,blast_r*2+4),pygame.SRCALPHA)
+                            pygame.draw.circle(ring_surf,(255,80,0,ring_a),(blast_r+2,blast_r+2),blast_r,2)
+                            self.screen.blit(ring_surf,(ix-blast_r-2,iy-blast_r-2))
+                            # Larger, brighter projectile body
+                            gsurf=pygame.Surface((32,32),pygame.SRCALPHA)
+                            pygame.draw.circle(gsurf,(255,60,0,80),(16,16),14)
+                            self.screen.blit(gsurf,(ix-16,iy-16))
+                            pygame.draw.circle(self.screen,ORANGE,(ix,iy),10)
+                            pygame.draw.circle(self.screen,YELLOW,(ix,iy),6)
+                            pygame.draw.circle(self.screen,WHITE, (ix,iy),3)
+                        else:
+                            pygame.draw.circle(self.screen,ORANGE,(ix,iy),10)
+                            pygame.draw.circle(self.screen,WHITE, (ix,iy),6)
                         if m.detonated:
-                            self.play_sfx('boom_tank'); self.create_explosion(m.x,m.y,WHITE,12,3.0)
-                            er=pygame.Rect(m.x-80,m.y-80,160,160); self.mortars.remove(m)
+                            blast_r=160 if m.tier>=2 else 80
+                            er=pygame.Rect(m.x-blast_r,m.y-blast_r,blast_r*2,blast_r*2)
+                            if m.tier>=2:
+                                # Multi-ring detonation flash
+                                for ri,rc in enumerate([(255,200,0),(255,100,0),(255,255,255)]):
+                                    rs=pygame.Surface((SCREEN_WIDTH,SCREEN_HEIGHT),pygame.SRCALPHA)
+                                    pygame.draw.circle(rs,(*rc,120-ri*35),(ix,iy),blast_r-ri*18,6-ri)
+                                    self.screen.blit(rs,(0,0))
+                                self.create_explosion(m.x,m.y,ORANGE,30,4.0)
+                                self.create_explosion(m.x,m.y,WHITE,20,5.0)
+                                self.shake=max(self.shake,18)
+                            else:
+                                self.create_explosion(m.x,m.y,WHITE,12,3.0)
+                            self.play_sfx('boom_nuke' if m.tier>=2 else 'boom_tank')
+                            self.mortars.remove(m)
                             for en in self.enemies[:]:
                                 if er.colliderect(en.rect):
-                                    if en.hit(): self.score+=50; self.enemies.remove(en)
+                                    # Mortar is one-hit kill on everything regardless of type
+                                    self.create_explosion(en.x,en.y,en.color,20)
+                                    self.play_sfx('boom_tank')
+                                    self.score+=150 if (en.is_tank or en.is_unbreakable) else 25
+                                    self.enemies.remove(en)
+                            for mt in self.meteorites[:]:
+                                if er.colliderect(mt.rect):
+                                    self.create_explosion(mt.x,mt.y,(180,180,200),20)
+                                    self.play_sfx('boom_tank'); self.score+=Meteorite.SCORE
+                                    self.meteorites.remove(mt)
                             for bb in self.boss_bullets[:]:
                                 if er.collidepoint(bb.x,bb.y): self.boss_bullets.remove(bb)
                             for bo in self.bosses:
-                                if not bo.is_dying and er.colliderect(bo.rect): bo.hp-=10; bo.shake_timer=10
+                                dmg=25 if m.tier>=2 else 10
+                                if not bo.is_dying and er.colliderect(bo.rect):
+                                    bo.hp-=dmg; bo.shake_timer=10
 
                     for l in self.letters[:]:
                         l.update(); l.draw(self.screen,self.misa_font)
                         if l.rect.colliderect(self.ship.rect):
+                            # Try to fill an unfilled slot first.
+                            # If all slots already filled, award 500 bonus points instead.
+                            collected = False
                             for w,pr in self.keyword_progress.items():
                                 if l.char in w:
                                     for i in range(len(w)):
                                         if w[i]==l.char and not pr[i]:
                                             pr[i]=True
                                             if all(pr): self.trigger_keyword(word=w)
+                                            collected=True
                                             break
-                                    else: continue
-                                    break
-                            self.play_sfx('blip'); self.letters.remove(l)
+                                if collected: break
+                            if collected:
+                                self.play_sfx('blip'); self.letters.remove(l)
+                            else:
+                                # Already-taken letter — bonus score
+                                self.score+=500; self.play_sfx('blip'); self.letters.remove(l)
                         elif l.y>SCREEN_HEIGHT: self.letters.remove(l)
 
                     if self.drone_timer>now:
@@ -1620,7 +2238,7 @@ class Game:
                         self.flare_timer+=dur; self.idle_timer+=dur; self.zapp_cooldown_timer+=dur
                         self.drone_timer+=dur; self.warp_timer+=dur; self.boss_collision_cooldown+=dur
                         for bo in self.bosses: bo.last_move_change+=dur; bo.rage_attack_timer+=dur
-                        self.play_next_track(self.boss_mode)
+                        self.play_next_track(self.boss_mode, rage=self.boss_rage_active)
 
             elif self.state==STATE_DEATH_SEQUENCE:
                 el=now-self.death_timer
@@ -1644,14 +2262,14 @@ class Game:
 
             elif self.state==STATE_NAME_ENTRY:
                 ov=pygame.Surface((SCREEN_WIDTH,SCREEN_HEIGHT),pygame.SRCALPHA); ov.fill((0,0,0,200)); self.screen.blit(ov,(0,0))
-                self.screen.blit(self.info_font.render("New High Score!",True,YELLOW),(SCREEN_WIDTH//2-80,100))
-                self.screen.blit(self.info_font.render(f"Score: {self.score:07}",True,WHITE),(SCREEN_WIDTH//2-80,180))
-                self.screen.blit(self.info_font.render("Enter Initials (4 Chars)",True,CYAN),(SCREEN_WIDTH//2-120,250))
+                self.screen.blit(self.info_font.render("New High Score!",True,YELLOW),(SCREEN_WIDTH//2-80,SCY-200))
+                self.screen.blit(self.info_font.render(f"Score: {self.score:07}",True,WHITE),(SCREEN_WIDTH//2-80,SCY-120))
+                self.screen.blit(self.info_font.render("Enter Initials (4 Chars)",True,CYAN),(SCREEN_WIDTH//2-120,SCY-50))
                 for i in range(4):
                     char=ALLOWED_CHARS[self.entry_name[i]]; color=YELLOW if i==self.entry_idx else WHITE
-                    img=self.info_font.render(char,True,color); self.screen.blit(img,(SCREEN_WIDTH//2-60+i*35,320))
-                    if i==self.entry_idx: pygame.draw.line(self.screen,YELLOW,(SCREEN_WIDTH//2-60+i*35,345),(SCREEN_WIDTH//2-40+i*35,345),2)
-                self.screen.blit(self.info_font.render("Up/Down to Cycle  -  Fire to Confirm  -  Bksp to Correct",True,DARK_GRAY),(SCREEN_WIDTH//2-220,450))
+                    img=self.info_font.render(char,True,color); self.screen.blit(img,(SCREEN_WIDTH//2-60+i*35,SCY+20))
+                    if i==self.entry_idx: pygame.draw.line(self.screen,YELLOW,(SCREEN_WIDTH//2-60+i*35,SCY+45),(SCREEN_WIDTH//2-40+i*35,SCY+45),2)
+                self.screen.blit(self.info_font.render("Up/Down to Cycle  -  Fire to Confirm  -  Bksp to Correct",True,DARK_GRAY),(SCREEN_WIDTH//2-220,SCY+150))
 
             elif self.state==STATE_VICTORY:
                 el=now-self.victory_timer
@@ -1663,12 +2281,12 @@ class Game:
                     self.ship.y-=8
                     if random.random()<0.5: self.particles.append(Particle(self.ship.x+35,self.ship.y+80,random.choice([CYAN,WHITE]),vy=5))
                 self.ship.draw(self.screen)
-                if el>3000 and self.stage in (1,2):
+                if el>3000 and self.stage in (1,2,3):
                     msg=self.countdown_font.render(f"PREPARE FOR STAGE {self.stage+1}",True,CYAN)
                     self.screen.blit(msg,(SCREEN_WIDTH//2-msg.get_width()//2,SCREEN_HEIGHT//2))
                 if el>6000:
                     pygame.mixer.music.fadeout(900)
-                    if self.stage in (1,2):
+                    if self.stage in (1,2,3):
                         self.stage+=1; self.distance=0
                         self.init_stars(self.stage); self._init_nebulas(self.stage); self._init_pulsars(self.stage)
                         self.planets=[Planet(self.stage) for _ in range(3)]
@@ -1694,14 +2312,20 @@ class Game:
                 pygame.draw.rect(self.screen,DARK_GRAY,(10+hox,ui_y,bw,bh),border_radius=3)
                 if prog>0: pygame.draw.rect(self.screen,YELLOW if prog>0.8 else CYAN,(10+hox,ui_y,int(bw*prog),bh),border_radius=3)
                 ui_y+=14
-                for i in range(max(0,self.lives)): draw_pixel_heart(self.screen,RED,SCREEN_WIDTH-25-i*30,25,25)
-                _PH=(48,50,60); ky=60
+                for i in range(max(0,self.lives)): draw_pixel_heart(self.screen,RED,SCREEN_WIDTH-25-i*30,HUD_LIVES_Y,25)
+                _PH=(48,50,60); ky=HUD_KW_Y
                 for word,progress in self.keyword_progress.items():
                     full_w=sum(self.misa_font.size(c)[0] for c in word); cx2=SCREEN_WIDTH-20-full_w
                     if word=="ZAPP" and self.zapp_active:
                         elapsed=max(0,16000-(self.zapp_cooldown_timer-now)); gc=elapsed//4000
                         for i,char in enumerate(word):
                             cw=self.misa_font.size(char)[0]; self.screen.blit(self.misa_font.render(char,True,GREEN if i<gc else RED),(cx2,ky)); cx2+=cw
+                        # ZAPP cooldown bar — supplementary to letter colouring
+                        bar_x=SCREEN_WIDTH-20-sum(self.misa_font.size(c)[0] for c in word)
+                        bar_w=sum(self.misa_font.size(c)[0] for c in word)
+                        cd_prog=min(1.0,elapsed/16000.0)
+                        pygame.draw.rect(self.screen,(40,40,40),(bar_x,ky+26,bar_w,3),border_radius=1)
+                        if cd_prog>0: pygame.draw.rect(self.screen,GREEN,(bar_x,ky+26,int(bar_w*cd_prog),3),border_radius=1)
                     else:
                         for i,char in enumerate(word):
                             cw=self.misa_font.size(char)[0]; col=(GREEN if all(progress) else WHITE) if progress[i] else _PH
@@ -1709,7 +2333,22 @@ class Game:
                     ky+=35
                 if self.warp_timer>now: pygame.draw.rect(self.screen,CYAN,(SCREEN_WIDTH-110,ky+10,int(100*((self.warp_timer-now)/WARP_DURATION_MS)),4))
                 if self.ghost_fires>0:
-                    gi=self.info_font.render(f"Ghost Ammo: {self.ghost_fires}",True,CYAN); self.screen.blit(gi,(SCREEN_WIDTH-20-gi.get_width(),SCREEN_HEIGHT-40))
+                    gi=self.info_font.render(f"Ghost Ammo: {self.ghost_fires}",True,CYAN); self.screen.blit(gi,(SCREEN_WIDTH-20-gi.get_width(),HUD_BOTTOM-16))
+                # Timed bottom-centre hints — shield and ZAPP ready, never overlap.
+                # Shield hint: shown for 10s after pickup, re-triggered if count changes.
+                # ZAPP ready hint: shown for 10s after ZAPP letters are first completed.
+                # Only one is shown at a time; ZAPP ready takes priority.
+                _hint_y=HUD_BOTTOM-2
+                if self.zapp_ready_timer>now:
+                    pulse_a=int(160+95*abs(math.sin(now*0.004)))
+                    zh=self.info_font.render("Z  -  ZAPP  READY",True,GREEN)
+                    zh.set_alpha(pulse_a)
+                    self.screen.blit(zh,(SCREEN_WIDTH//2-zh.get_width()//2,_hint_y))
+                elif self.shield_hint_timer>now and self.shields>0 and not self.shield_active:
+                    pulse_a=int(160+95*abs(math.sin(now*0.003)))
+                    sh=self.info_font.render(f"C  -  SHIELD  x{self.shields}",True,CYAN)
+                    sh.set_alpha(pulse_a)
+                    self.screen.blit(sh,(SCREEN_WIDTH//2-sh.get_width()//2,_hint_y))
 
             # =================================================================
             # OVERLAY MENUS
@@ -1765,11 +2404,53 @@ class Game:
             if self.save_flash>now:
                 fr=(self.save_flash-now)/1200.0; sv=pygame.Surface((SCREEN_WIDTH,SCREEN_HEIGHT),pygame.SRCALPHA)
                 sv.fill((0,30,60,int(80*fr))); self.screen.blit(sv,(0,0))
-                si=self.info_font.render("Game Saved!",True,CYAN); self.screen.blit(si,(SCREEN_WIDTH//2-si.get_width()//2,SCREEN_HEIGHT-46))
+                si=self.info_font.render("Game Saved!",True,CYAN); self.screen.blit(si,(SCREEN_WIDTH//2-si.get_width()//2,HUD_BOTTOM-22))
             if self.screenshot_flash>now:
                 fr=(self.screenshot_flash-now)/900.0; fl=pygame.Surface((SCREEN_WIDTH,SCREEN_HEIGHT),pygame.SRCALPHA)
                 fl.fill((255,255,255,int(210*fr))); self.screen.blit(fl,(0,0))
-                si=self.info_font.render("Screenshot saved!",True,YELLOW); self.screen.blit(si,(SCREEN_WIDTH//2-si.get_width()//2,SCREEN_HEIGHT-46))
+                si=self.info_font.render("Screenshot saved!",True,YELLOW); self.screen.blit(si,(SCREEN_WIDTH//2-si.get_width()//2,HUD_BOTTOM-22))
+
+            # -----------------------------------------------------------------
+            # RAGE MODE FLASH
+            # -----------------------------------------------------------------
+            if self.rage_flash_timer>now:
+                fr=(self.rage_flash_timer-now)/2500.0
+                rf=pygame.Surface((SCREEN_WIDTH,SCREEN_HEIGHT),pygame.SRCALPHA)
+                rf.fill((180,0,0,int(120*fr))); self.screen.blit(rf,(0,0))
+                pulse=abs(math.sin((2500-(self.rage_flash_timer-now))*0.006))
+                ra=int(200+55*pulse)
+                rm=self.countdown_font.render("RAGE MODE",True,(ra,0,0))
+                rs=pygame.Surface((rm.get_width()+20,rm.get_height()+10),pygame.SRCALPHA)
+                rs.fill((0,0,0,int(160*fr)))
+                self.screen.blit(rs,(SCREEN_WIDTH//2-rs.get_width()//2,SCREEN_HEIGHT//2-rs.get_height()//2))
+                rm.set_alpha(int(255*fr))
+                self.screen.blit(rm,(SCREEN_WIDTH//2-rm.get_width()//2,SCREEN_HEIGHT//2-rm.get_height()//2+5))
+
+            # -----------------------------------------------------------------
+            # STAGE BRIEFING OVERLAY
+            # -----------------------------------------------------------------
+            if self.stage_briefing_timer>now and self.state==STATE_PLAYING:
+                _STAGE_NAMES={1:"OUTER BELT",2:"DEEP SPACE",3:"FINAL APPROACH",4:"VOID RIFT"}
+                _BRIEFINGS={
+                    1:"Patrol the outer belt. Eliminate all hostiles.",
+                    2:"Deep space sector. Warships detected. Stay sharp.",
+                    3:"Final approach. The twin planets must be destroyed.",
+                    4:"Reality fractures here. Nothing is what it seems.",
+                }
+                fr=min(1.0,(self.stage_briefing_timer-now)/3500.0)
+                alpha=int(255*min(fr*4,1.0)*min((1.0-fr)*4,1.0))
+                alpha=max(0,min(255,alpha))
+                _BY=STAGE_BRIEF_Y
+                sb=pygame.Surface((SCREEN_WIDTH,64),pygame.SRCALPHA)
+                sb.fill((0,0,0,int(180*(alpha/255))))
+                self.screen.blit(sb,(0,_BY))
+                stage_label=f"STAGE  {self.stage}  —  {_STAGE_NAMES.get(self.stage,'')}"
+                stg=self.menu_font.render(stage_label,True,CYAN)
+                stg.set_alpha(alpha)
+                self.screen.blit(stg,(SCREEN_WIDTH//2-stg.get_width()//2,_BY+6))
+                brief=self.info_font.render(_BRIEFINGS.get(self.stage,""),True,WHITE)
+                brief.set_alpha(alpha)
+                self.screen.blit(brief,(SCREEN_WIDTH//2-brief.get_width()//2,_BY+36))
 
             pygame.display.flip()
             if self.pending_screenshot: self.pending_screenshot=False; self.take_screenshot()
@@ -1805,6 +2486,7 @@ class Game:
         rate=WEAPONS[self.weapon]['rate']
         if self.weapon_tier>1 and self.weapon not in ('laser','super_laser'): rate//=2
         if now-self.last_fire<rate: return
+        if len(self.bullets)>=80: return
         self.last_fire=now; self.play_sfx(WEAPONS[self.weapon]['sound'])
         cx,y=self.ship.x+self.ship.width//2,self.ship.y
         lr=math.radians(self.ship.lean*3.4) if self.trajectory_enabled else 0.0

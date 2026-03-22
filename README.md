@@ -1,4 +1,19 @@
-# 🚀 ULTRA SPACE ARCADE (v0.13)
+##  INFO
+**This is a vibe coding project.** 
+
+
+Created as experiment to understand the posibilities of AI and test tools like Gemini CLI, Kiro, Claude code and others. 
+
+I didn't wrote or changed a single line of code manually on this project. 
+
+
+![5c3e807f-bfbb-43f9-8fc6-f63a47a7df6b_text](https://github.com/user-attachments/assets/204a703a-4db7-4a2d-81e9-ab07b933820f)
+
+---
+
+
+
+# 🚀 ULTRA SPACE ARCADE (v0.18)
 **A High-Fidelity Evolutionary 2D Arcade Shooter**
 
 Ultra Space Arcade is a tactical, fast-paced space shooter built with Python and Pygame. It features a deep weapon evolution system, complex multi-phase boss battles, and a unique "Nebula Frontier" stage progression system.
@@ -84,4 +99,4 @@ A persistent award that clears the horizontal plane of the ship.
 - **Music**: Taken form [suno](https://suno.com/) ATTENTION: Music is provided stricty for personal an experimental use. No modification, no distribution, no reuse, or public usage allowed!
 
 ---
-*Created by [limbo666]. v0.13 Master Distribution.*
+*Created by [limbo666].*

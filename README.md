@@ -59,22 +59,24 @@ A persistent award that clears the horizontal plane of the ship.
 ---
 
 ## 👾 Mission Sectors
-### Stage 1: The Asteroid Belt
+### Stage 1: Outer Belt
 - **Environment**: Grey starfields and rocky planetary bodies.
 - **Boss**: **The Twin Cursed Planets**
   - **Mechanics**: 200 HP per hull. No shields.
-  - **Rage Mode**: Killing one twin sends the other into a Maroon Rage (Purple eyes, 1.2x speed).
+  - **Rage Mode**: Killing one twin sends the other into a Maroon Rage
   - **Rage Pulse**: The survivor emits a massive white shockwave every 4 seconds.
   - **Hit Leaking**: Deals damage to "leak" weapon and nuke power-ups.
 
-### Stage 2: The Nebula Frontier
+### Stage 2: Deep Space 
 - **Visuals**: Vibrant **Red & Yellow** starfields with **Blue, Green, and Pink** planets.
 - **Intensity**: 30% higher enemy density with a 20% surge mid-journey (5.0 Au).
 - **Elite Unit**: **Star-Spike Warship**
   - **Design**: Replicated from heavy "EnemyDrone" specs.
   - **Behavior**: Hovers and wanders for 5s firing downward, then launches a locked-trajectory kamikaze charge.
 
-### Stage 3: The Astro Edge
+### Stage 3: Final Approach
+
+### Stage 4: Void Rift
 
 ---
 

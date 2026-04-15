@@ -94,11 +94,14 @@ A persistent award that clears the horizontal plane of the ship.
   - `Masterpiece.ttf` (Titles)
   - `Orbitron / Epyval.ttf` (HUD/Menu)
   - `13_Misa.TTF` (Awards)
-- **License**: Restricted Use (Personal/Experimental only).
+
 
 ##  Sound
 - **Sound Effects**: Taken from [sfxr](https://sfxr.me/). What a great service! 
 - **Music**: Taken form [suno](https://suno.com/) ATTENTION: Music is provided stricty for personal an experimental use. No modification, no distribution, no reuse, or public usage allowed!
 
+## License  
+
+ - Restricted Use (Personal use/Experimental use only).
 ---
 *Created by [limbo666].*
